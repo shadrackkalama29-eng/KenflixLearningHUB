@@ -1,0 +1,125 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: userId
+    // Fields:
+    //   - id: string (required)
+    //   - name: string (required)
+    //   - email: string (required)
+    //   - role: string (required, enum: ['student', 'instructor', 'admin'])
+    //   - avatar: string (optional)
+    //
+    // Collection: courses
+    // Document ID: courseId
+    // Fields:
+    //   - id: string (required)
+    //   - title: string (required)
+    //   - description: string (required)
+    //   - price: number (required)
+    //   - duration: string (required)
+    //
+    // Collection: enrollments
+    // Document ID: enrollmentId (userId_courseId)
+    // Fields:
+    //   - id: string (required)
+    //   - userId: string (required)
+    //   - programId: string (required)
+    //   - status: string (required, enum: ['active', 'locked', 'completed'])
+    //   - progress: number (required)
+    //   - completedModules: list (required)
+    //   - dueDate: string (required, ISO 8601)
+    //   - lastPaymentDate: string (required, ISO 8601)
+    //
+    // Collection: payments
+    // Document ID: paymentId
+    // Fields:
+    //   - id: string (required)
+    //   - userId: string (required)
+    //   - enrollmentId: string (required)
+    //   - amount: number (required)
+    //   - method: string (required, enum: ['mpesa'])
+    //   - transactionId: string (required)
+    //   - timestamp: string (required, ISO 8601)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+         request.auth.token.email == "shadrackkalamakalamazoow@gmail.com");
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['id', 'name', 'email', 'role']) &&
+             data.id is string &&
+             data.name is string && data.name.size() < 100 &&
+             data.email is string && data.email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$") &&
+             data.role in ['student', 'instructor', 'admin'];
+    }
+
+    function isValidEnrollment(data) {
+      return data.keys().hasAll(['id', 'userId', 'programId', 'status', 'progress', 'completedModules', 'dueDate', 'lastPaymentDate']) &&
+             data.userId == request.auth.uid &&
+             data.status in ['active', 'locked', 'completed'] &&
+             data.progress is number && data.progress >= 0 && data.progress <= 100 &&
+             data.completedModules is list;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.role == 'student';
+      allow update: if (isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.role == resource.data.role) || isAdmin();
+    }
+
+    match /courses/{courseId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /enrollments/{enrollmentId} {
+      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidEnrollment(request.resource.data);
+      allow update: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin()) && isValidEnrollment(request.resource.data);
+    }
+
+    match /payments/{paymentId} {
+      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+    }
+
+    match /posts/{postId} {
+      allow read: if true;
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow update: if isAuthenticated() && (
+        // Allow liking (only likes field changes)
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes'])) ||
+        // Allow commenting (only comments field changes)
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['comments'])) ||
+        // Allow owner to edit content
+        (resource.data.userId == request.auth.uid)
+      );
+      allow delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+    }
+  }
+}
